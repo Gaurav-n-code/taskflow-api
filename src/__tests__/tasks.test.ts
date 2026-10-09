@@ -111,6 +111,12 @@ describe('GET /api/projects/:projectId/tasks', () => {
     expect(res.body.success).toBe(true);
     expect(res.body.pagination).toBeDefined();
     expect(res.body.pagination.total).toBe(2);
+    expect(res.body.pagination.page).toBe(1);
+    expect(res.body.pagination.limit).toBe(20);
+    expect(res.body.pagination.totalPages).toBe(1);
+    expect(res.body.pagination.hasNextPage).toBe(false);
+    expect(res.body.pagination.hasPrevPage).toBe(false);
+    expect(res.body.data).toHaveLength(2);
   });
 
   it('filters tasks by priority', async () => {
@@ -127,6 +133,224 @@ describe('GET /api/projects/:projectId/tasks', () => {
       .set('Authorization', `Bearer ${aliceToken}`);
     expect(res.status).toBe(200);
     expect(res.body.data.every((t: { status: string }) => t.status === 'in_progress')).toBe(true);
+  });
+
+  describe('Pagination regression tests', () => {
+    beforeEach(async () => {
+      // Clear and create 5 distinct tasks with sequential creation dates
+      await Task.deleteMany({});
+      for (let i = 1; i <= 5; i++) {
+        await request(app)
+          .post(`/api/projects/${projectId}/tasks`)
+          .set('Authorization', `Bearer ${aliceToken}`)
+          .send({
+            title: `Task ${i}`,
+            priority: i % 2 === 0 ? 'high' : 'low',
+            status: i <= 3 ? 'todo' : 'completed',
+          });
+      }
+    });
+
+    it('returns page 1 starting at offset 0 without skipping items', async () => {
+      const res = await request(app)
+        .get(`/api/projects/${projectId}/tasks?page=1&limit=2`)
+        .set('Authorization', `Bearer ${aliceToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toHaveLength(2);
+      expect(res.body.data[0].title).toBe('Task 5'); // sorted by createdAt desc
+      expect(res.body.data[1].title).toBe('Task 4');
+      expect(res.body.pagination).toEqual({
+        total: 5,
+        page: 1,
+        limit: 2,
+        totalPages: 3,
+        hasNextPage: true,
+        hasPrevPage: false,
+      });
+    });
+
+    it('returns page 2 with next records without overlap or skipped records', async () => {
+      const page1Res = await request(app)
+        .get(`/api/projects/${projectId}/tasks?page=1&limit=2`)
+        .set('Authorization', `Bearer ${aliceToken}`);
+
+      const page2Res = await request(app)
+        .get(`/api/projects/${projectId}/tasks?page=2&limit=2`)
+        .set('Authorization', `Bearer ${aliceToken}`);
+
+      expect(page2Res.status).toBe(200);
+      expect(page2Res.body.data).toHaveLength(2);
+      expect(page2Res.body.data[0].title).toBe('Task 3');
+      expect(page2Res.body.data[1].title).toBe('Task 2');
+      expect(page2Res.body.pagination).toEqual({
+        total: 5,
+        page: 2,
+        limit: 2,
+        totalPages: 3,
+        hasNextPage: true,
+        hasPrevPage: true,
+      });
+
+      // Assert no overlap between page 1 and page 2
+      const page1Ids = page1Res.body.data.map((t: { _id: string }) => t._id);
+      const page2Ids = page2Res.body.data.map((t: { _id: string }) => t._id);
+      const intersection = page1Ids.filter((id: string) => page2Ids.includes(id));
+      expect(intersection).toHaveLength(0);
+    });
+
+    it('returns the last page with remaining items and correct metadata', async () => {
+      const res = await request(app)
+        .get(`/api/projects/${projectId}/tasks?page=3&limit=2`)
+        .set('Authorization', `Bearer ${aliceToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toHaveLength(1);
+      expect(res.body.data[0].title).toBe('Task 1');
+      expect(res.body.pagination).toEqual({
+        total: 5,
+        page: 3,
+        limit: 2,
+        totalPages: 3,
+        hasNextPage: false,
+        hasPrevPage: true,
+      });
+    });
+
+    it('returns empty results when page exceeds total pages', async () => {
+      const res = await request(app)
+        .get(`/api/projects/${projectId}/tasks?page=4&limit=2`)
+        .set('Authorization', `Bearer ${aliceToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toHaveLength(0);
+      expect(res.body.pagination).toEqual({
+        total: 5,
+        page: 4,
+        limit: 2,
+        totalPages: 3,
+        hasNextPage: false,
+        hasPrevPage: true,
+      });
+    });
+
+    it('handles pagination correctly when result set is empty', async () => {
+      await Task.deleteMany({});
+      const res = await request(app)
+        .get(`/api/projects/${projectId}/tasks?page=1&limit=20`)
+        .set('Authorization', `Bearer ${aliceToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toHaveLength(0);
+      expect(res.body.pagination).toEqual({
+        total: 0,
+        page: 1,
+        limit: 20,
+        totalPages: 0,
+        hasNextPage: false,
+        hasPrevPage: false,
+      });
+    });
+
+    it('combines pagination with status and priority filters', async () => {
+      // 5 tasks: Task 1 (low, todo), Task 2 (high, todo), Task 3 (low, todo), Task 4 (high, completed), Task 5 (low, completed)
+      // Filter status=todo -> Tasks 1, 2, 3 (total: 3)
+      const res = await request(app)
+        .get(`/api/projects/${projectId}/tasks?status=todo&page=1&limit=2`)
+        .set('Authorization', `Bearer ${aliceToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toHaveLength(2);
+      expect(res.body.data[0].title).toBe('Task 3');
+      expect(res.body.data[1].title).toBe('Task 2');
+      expect(res.body.pagination.total).toBe(3);
+      expect(res.body.pagination.totalPages).toBe(2);
+      expect(res.body.pagination.hasNextPage).toBe(true);
+
+      const page2Res = await request(app)
+        .get(`/api/projects/${projectId}/tasks?status=todo&page=2&limit=2`)
+        .set('Authorization', `Bearer ${aliceToken}`);
+
+      expect(page2Res.status).toBe(200);
+      expect(page2Res.body.data).toHaveLength(1);
+      expect(page2Res.body.data[0].title).toBe('Task 1');
+      expect(page2Res.body.pagination.hasNextPage).toBe(false);
+      expect(page2Res.body.pagination.hasPrevPage).toBe(true);
+    });
+
+    describe('Query parameter validation', () => {
+      it('rejects page = 0 with 400', async () => {
+        const res = await request(app)
+          .get(`/api/projects/${projectId}/tasks?page=0`)
+          .set('Authorization', `Bearer ${aliceToken}`);
+        expect(res.status).toBe(400);
+        expect(res.body.success).toBe(false);
+      });
+
+      it('rejects negative page with 400', async () => {
+        const res = await request(app)
+          .get(`/api/projects/${projectId}/tasks?page=-1`)
+          .set('Authorization', `Bearer ${aliceToken}`);
+        expect(res.status).toBe(400);
+        expect(res.body.success).toBe(false);
+      });
+
+      it('rejects non-integer page with 400', async () => {
+        const res = await request(app)
+          .get(`/api/projects/${projectId}/tasks?page=1.5`)
+          .set('Authorization', `Bearer ${aliceToken}`);
+        expect(res.status).toBe(400);
+        expect(res.body.success).toBe(false);
+      });
+
+      it('rejects non-numeric string page with 400', async () => {
+        const res = await request(app)
+          .get(`/api/projects/${projectId}/tasks?page=abc`)
+          .set('Authorization', `Bearer ${aliceToken}`);
+        expect(res.status).toBe(400);
+        expect(res.body.success).toBe(false);
+      });
+
+      it('rejects limit = 0 with 400', async () => {
+        const res = await request(app)
+          .get(`/api/projects/${projectId}/tasks?limit=0`)
+          .set('Authorization', `Bearer ${aliceToken}`);
+        expect(res.status).toBe(400);
+        expect(res.body.success).toBe(false);
+      });
+
+      it('rejects negative limit with 400', async () => {
+        const res = await request(app)
+          .get(`/api/projects/${projectId}/tasks?limit=-5`)
+          .set('Authorization', `Bearer ${aliceToken}`);
+        expect(res.status).toBe(400);
+        expect(res.body.success).toBe(false);
+      });
+
+      it('rejects non-integer limit with 400', async () => {
+        const res = await request(app)
+          .get(`/api/projects/${projectId}/tasks?limit=2.5`)
+          .set('Authorization', `Bearer ${aliceToken}`);
+        expect(res.status).toBe(400);
+        expect(res.body.success).toBe(false);
+      });
+
+      it('rejects limit exceeding maximum 100 with 400', async () => {
+        const res = await request(app)
+          .get(`/api/projects/${projectId}/tasks?limit=101`)
+          .set('Authorization', `Bearer ${aliceToken}`);
+        expect(res.status).toBe(400);
+        expect(res.body.success).toBe(false);
+      });
+
+      it('accepts limit = 100 with 200', async () => {
+        const res = await request(app)
+          .get(`/api/projects/${projectId}/tasks?limit=100`)
+          .set('Authorization', `Bearer ${aliceToken}`);
+        expect(res.status).toBe(200);
+        expect(res.body.pagination.limit).toBe(100);
+      });
+    });
   });
 });
 
