@@ -33,13 +33,21 @@ export const listTasksQuerySchema = z.object({
   page: z
     .string()
     .optional()
-    .transform((v) => parseInt(v ?? '1', 10))
-    .pipe(z.number().int().min(1)),
+    .refine((v) => v === undefined || /^[+-]?\d+$/.test(v.trim()), {
+      message: 'Page must be an integer',
+    })
+    .transform((v) => (v === undefined ? 1 : Number(v)))
+    .pipe(z.number().int().min(1, 'Page must be at least 1')),
   limit: z
     .string()
     .optional()
-    .transform((v) => parseInt(v ?? '20', 10))
-    .pipe(z.number().int().min(1).max(100)),
+    .refine((v) => v === undefined || /^[+-]?\d+$/.test(v.trim()), {
+      message: 'Limit must be an integer',
+    })
+    .transform((v) => (v === undefined ? 20 : Number(v)))
+    .pipe(
+      z.number().int().min(1, 'Limit must be at least 1').max(100, 'Limit must not exceed 100'),
+    ),
   status: z.enum(taskStatusValues).optional(),
   priority: z.enum(taskPriorityValues).optional(),
 });
