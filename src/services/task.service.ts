@@ -62,8 +62,8 @@ export async function listTasks(
 
   const total = await Task.countDocuments(filter);
 
-  // DEFECT A: Pagination off-by-one — uses page * limit instead of (page - 1) * limit
-  const offset = page * limit;
+  // Calculate offset correctly for 1-based page indexing
+  const offset = (page - 1) * limit;
 
   const tasks = await Task.find(filter)
     .sort({ createdAt: -1 })
