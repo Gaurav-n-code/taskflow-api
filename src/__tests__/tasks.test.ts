@@ -189,6 +189,186 @@ describe('PATCH /api/projects/:projectId/tasks/:taskId', () => {
   });
 });
 
+describe('PATCH /api/projects/:projectId/tasks/:taskId/status', () => {
+  it('allows valid transition from todo -> in_progress', async () => {
+    const createRes = await request(app)
+      .post(`/api/projects/${projectId}/tasks`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ title: 'Task to Progress', status: 'todo' });
+    const taskId = createRes.body.data._id as string;
+
+    const res = await request(app)
+      .patch(`/api/projects/${projectId}/tasks/${taskId}/status`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ status: 'in_progress' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.status).toBe('in_progress');
+
+    // Verify persisted in DB
+    const getRes = await request(app)
+      .get(`/api/projects/${projectId}/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${aliceToken}`);
+    expect(getRes.body.data.status).toBe('in_progress');
+  });
+
+  it('allows valid transition from in_progress -> completed', async () => {
+    const createRes = await request(app)
+      .post(`/api/projects/${projectId}/tasks`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ title: 'Task to Complete', status: 'in_progress' });
+    const taskId = createRes.body.data._id as string;
+
+    const res = await request(app)
+      .patch(`/api/projects/${projectId}/tasks/${taskId}/status`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ status: 'completed' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.status).toBe('completed');
+  });
+
+  it('rejects invalid transition from todo -> completed with 400 and preserves state', async () => {
+    const createRes = await request(app)
+      .post(`/api/projects/${projectId}/tasks`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ title: 'Todo Task', status: 'todo' });
+    const taskId = createRes.body.data._id as string;
+
+    const res = await request(app)
+      .patch(`/api/projects/${projectId}/tasks/${taskId}/status`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ status: 'completed' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+    expect(res.body.error).toContain('Invalid status transition');
+
+    // Verify task state unchanged in DB
+    const checkRes = await request(app)
+      .get(`/api/projects/${projectId}/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${aliceToken}`);
+    expect(checkRes.body.data.status).toBe('todo');
+  });
+
+  it('rejects transitions out of completed (terminal status) with 400 and preserves state', async () => {
+    const createRes = await request(app)
+      .post(`/api/projects/${projectId}/tasks`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ title: 'Completed Task', status: 'completed' });
+    const taskId = createRes.body.data._id as string;
+
+    // Try completed -> in_progress
+    const res1 = await request(app)
+      .patch(`/api/projects/${projectId}/tasks/${taskId}/status`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ status: 'in_progress' });
+
+    expect(res1.status).toBe(400);
+    expect(res1.body.success).toBe(false);
+
+    // Try completed -> todo
+    const res2 = await request(app)
+      .patch(`/api/projects/${projectId}/tasks/${taskId}/status`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ status: 'todo' });
+
+    expect(res2.status).toBe(400);
+    expect(res2.body.success).toBe(false);
+
+    // Verify task status still completed
+    const checkRes = await request(app)
+      .get(`/api/projects/${projectId}/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${aliceToken}`);
+    expect(checkRes.body.data.status).toBe('completed');
+  });
+
+  it('rejects repeated/same-state transitions (e.g., todo -> todo, in_progress -> in_progress)', async () => {
+    const createRes = await request(app)
+      .post(`/api/projects/${projectId}/tasks`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ title: 'Todo Task', status: 'todo' });
+    const taskId = createRes.body.data._id as string;
+
+    const res = await request(app)
+      .patch(`/api/projects/${projectId}/tasks/${taskId}/status`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ status: 'todo' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+  });
+
+  it('rejects backwards transition from in_progress -> todo', async () => {
+    const createRes = await request(app)
+      .post(`/api/projects/${projectId}/tasks`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ title: 'In Progress Task', status: 'in_progress' });
+    const taskId = createRes.body.data._id as string;
+
+    const res = await request(app)
+      .patch(`/api/projects/${projectId}/tasks/${taskId}/status`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ status: 'todo' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+  });
+
+  it('rejects unsupported status values (e.g. "archived", "cancelled", random string) with 400', async () => {
+    const createRes = await request(app)
+      .post(`/api/projects/${projectId}/tasks`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ title: 'Test Task' });
+    const taskId = createRes.body.data._id as string;
+
+    const res1 = await request(app)
+      .patch(`/api/projects/${projectId}/tasks/${taskId}/status`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ status: 'archived' });
+
+    expect(res1.status).toBe(400);
+    expect(res1.body.success).toBe(false);
+
+    const res2 = await request(app)
+      .patch(`/api/projects/${projectId}/tasks/${taskId}/status`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ status: 'random_status' });
+
+    expect(res2.status).toBe(400);
+    expect(res2.body.success).toBe(false);
+  });
+
+  it('rejects empty or missing status in payload with 400', async () => {
+    const createRes = await request(app)
+      .post(`/api/projects/${projectId}/tasks`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ title: 'Test Task' });
+    const taskId = createRes.body.data._id as string;
+
+    const res = await request(app)
+      .patch(`/api/projects/${projectId}/tasks/${taskId}/status`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({});
+
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+  });
+
+  it('returns 404 when updating status for a non-existent task', async () => {
+    const fakeId = new mongoose.Types.ObjectId().toString();
+    const res = await request(app)
+      .patch(`/api/projects/${projectId}/tasks/${fakeId}/status`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ status: 'in_progress' });
+
+    expect(res.status).toBe(404);
+    expect(res.body.success).toBe(false);
+  });
+});
+
 describe('DELETE /api/projects/:projectId/tasks/:taskId', () => {
   it('deletes a task successfully', async () => {
     const createRes = await request(app)

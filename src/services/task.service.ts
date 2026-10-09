@@ -142,6 +142,12 @@ export async function updateTask(
   return task;
 }
 
+const ALLOWED_STATUS_TRANSITIONS: Record<string, string[]> = {
+  todo: ['in_progress'],
+  in_progress: ['completed'],
+  completed: [], // Terminal status
+};
+
 export async function updateTaskStatus(
   projectId: string,
   taskId: string,
@@ -151,7 +157,7 @@ export async function updateTaskStatus(
   // Verifies authentication (via middleware) and project access
   await assertProjectAccess(projectId, userId);
 
-  // DEFECT B also applies here: no task-level auth check before update
+  // DEFECT B preserved in this branch: no task-level auth check before update
   const task = await Task.findOne({
     _id: new Types.ObjectId(taskId),
     projectId: new Types.ObjectId(projectId),
@@ -161,9 +167,23 @@ export async function updateTaskStatus(
     throw new AppError(404, 'Task not found');
   }
 
-  // DEFECT C: No enum validation — any string status is accepted and persisted
-  // The schema uses z.string() instead of z.enum([...]) so we cast directly
-  task.status = input.status as ITask['status'];
+  const currentStatus = task.status;
+  const targetStatus = input.status;
+
+  const allowedNext = ALLOWED_STATUS_TRANSITIONS[currentStatus] ?? [];
+
+  if (!allowedNext.includes(targetStatus)) {
+    throw new AppError(
+      400,
+      `Invalid status transition from '${currentStatus}' to '${targetStatus}'. Allowed transitions: ${
+        allowedNext.length > 0
+          ? allowedNext.map((s) => `'${s}'`).join(', ')
+          : 'none (terminal status)'
+      }`,
+    );
+  }
+
+  task.status = targetStatus;
   await task.save();
 
   return task;

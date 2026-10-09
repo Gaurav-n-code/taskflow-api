@@ -30,6 +30,7 @@ const taskSchema = new Schema<ITask>(
     },
     status: {
       type: String,
+      enum: ['todo', 'in_progress', 'completed'],
       default: 'todo',
     },
     priority: {
