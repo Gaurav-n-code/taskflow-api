@@ -113,32 +113,49 @@ export async function updateTask(
   // Verifies authentication (via middleware) and project access
   await assertProjectAccess(projectId, userId);
 
-  // DEFECT B: Missing task-level authorization check.
-  // We do not verify that userId is the task creator or assignee before allowing the update.
-  const task = await Task.findOne({
-    _id: new Types.ObjectId(taskId),
-    projectId: new Types.ObjectId(projectId),
-  });
+  // Construct atomic update operation only for provided fields
+  const updateDoc: Record<string, unknown> = {};
+  const setFields: Record<string, unknown> = {};
+  const unsetFields: Record<string, unknown> = {};
+
+  if (input.title !== undefined) setFields['title'] = input.title;
+  if (input.description !== undefined) setFields['description'] = input.description;
+  if (input.priority !== undefined) setFields['priority'] = input.priority;
+
+  if (input.assigneeId !== undefined) {
+    if (input.assigneeId === null) {
+      unsetFields['assigneeId'] = 1;
+    } else {
+      if (!Types.ObjectId.isValid(input.assigneeId)) {
+        throw new AppError(400, 'Invalid assigneeId');
+      }
+      setFields['assigneeId'] = new Types.ObjectId(input.assigneeId);
+    }
+  }
+
+  if (Object.keys(setFields).length > 0) {
+    updateDoc['$set'] = setFields;
+  }
+  if (Object.keys(unsetFields).length > 0) {
+    updateDoc['$unset'] = unsetFields;
+  }
+
+  // Atomic MongoDB update: modifies only the fields specified in the request
+  // runValidators ensures Mongoose schema constraints are applied
+  // new: true returns the updated document
+  const task = await Task.findOneAndUpdate(
+    {
+      _id: new Types.ObjectId(taskId),
+      projectId: new Types.ObjectId(projectId),
+    },
+    Object.keys(updateDoc).length > 0 ? updateDoc : {},
+    { new: true, runValidators: true },
+  );
 
   if (!task) {
     throw new AppError(404, 'Task not found');
   }
 
-  if (input.title !== undefined) task.title = input.title;
-  if (input.description !== undefined) task.description = input.description;
-  if (input.priority !== undefined) task.priority = input.priority;
-  if (input.assigneeId !== undefined) {
-    if (input.assigneeId === null) {
-      task.assigneeId = undefined;
-    } else {
-      if (!Types.ObjectId.isValid(input.assigneeId)) {
-        throw new AppError(400, 'Invalid assigneeId');
-      }
-      task.assigneeId = new Types.ObjectId(input.assigneeId);
-    }
-  }
-
-  await task.save();
   return task;
 }
 

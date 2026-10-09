@@ -174,18 +174,189 @@ describe('PATCH /api/projects/:projectId/tasks/:taskId', () => {
     expect(res.body.data.priority).toBe('high');
   });
 
-  it('returns 400 for an invalid priority value', async () => {
+  it('updating the title preserves the existing priority', async () => {
     const createRes = await request(app)
       .post(`/api/projects/${projectId}/tasks`)
       .set('Authorization', `Bearer ${aliceToken}`)
-      .send({ title: 'A Task' });
+      .send({ title: 'Initial Title', priority: 'high', description: 'Initial Desc' });
     const taskId = createRes.body.data._id as string;
 
     const res = await request(app)
       .patch(`/api/projects/${projectId}/tasks/${taskId}`)
       .set('Authorization', `Bearer ${aliceToken}`)
-      .send({ priority: 'critical' });
+      .send({ title: 'Updated Title' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.title).toBe('Updated Title');
+    expect(res.body.data.priority).toBe('high');
+    expect(res.body.data.description).toBe('Initial Desc');
+
+    const getRes = await request(app)
+      .get(`/api/projects/${projectId}/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${aliceToken}`);
+    expect(getRes.body.data.priority).toBe('high');
+    expect(getRes.body.data.description).toBe('Initial Desc');
+  });
+
+  it('updating the priority preserves the existing title', async () => {
+    const createRes = await request(app)
+      .post(`/api/projects/${projectId}/tasks`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ title: 'Fixed Title', priority: 'low' });
+    const taskId = createRes.body.data._id as string;
+
+    const res = await request(app)
+      .patch(`/api/projects/${projectId}/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ priority: 'high' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.priority).toBe('high');
+    expect(res.body.data.title).toBe('Fixed Title');
+
+    const getRes = await request(app)
+      .get(`/api/projects/${projectId}/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${aliceToken}`);
+    expect(getRes.body.data.title).toBe('Fixed Title');
+  });
+
+  it('two concurrent partial updates to different fields preserve both changes without lost updates', async () => {
+    const createRes = await request(app)
+      .post(`/api/projects/${projectId}/tasks`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ title: 'Prepare release', priority: 'low', description: 'Original description' });
+    const taskId = createRes.body.data._id as string;
+
+    // Issue two concurrent atomic PATCH requests simultaneously
+    const [resA, resB] = await Promise.all([
+      request(app)
+        .patch(`/api/projects/${projectId}/tasks/${taskId}`)
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send({ title: 'Prepare v2 release' }),
+      request(app)
+        .patch(`/api/projects/${projectId}/tasks/${taskId}`)
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send({ priority: 'high' }),
+    ]);
+
+    expect(resA.status).toBe(200);
+    expect(resB.status).toBe(200);
+
+    // Fetch the final document from DB to verify both concurrent updates survived
+    const finalRes = await request(app)
+      .get(`/api/projects/${projectId}/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${aliceToken}`);
+
+    expect(finalRes.status).toBe(200);
+    expect(finalRes.body.data.title).toBe('Prepare v2 release');
+    expect(finalRes.body.data.priority).toBe('high');
+    expect(finalRes.body.data.description).toBe('Original description');
+  });
+
+  it('omitted fields are not reset to defaults or overwritten by stale values', async () => {
+    const createRes = await request(app)
+      .post(`/api/projects/${projectId}/tasks`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ title: 'Original', description: 'Important context', priority: 'high' });
+    const taskId = createRes.body.data._id as string;
+
+    // Only update description
+    const res = await request(app)
+      .patch(`/api/projects/${projectId}/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ description: 'Updated context' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.title).toBe('Original');
+    expect(res.body.data.priority).toBe('high');
+    expect(res.body.data.description).toBe('Updated context');
+  });
+
+  it('attempts to modify server-controlled fields (_id, createdBy, projectId) are ignored and do not alter document', async () => {
+    const createRes = await request(app)
+      .post(`/api/projects/${projectId}/tasks`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ title: 'Security Task', priority: 'medium' });
+    const taskId = createRes.body.data._id as string;
+    const originalCreatedBy = createRes.body.data.createdBy;
+    const fakeId = new mongoose.Types.ObjectId().toString();
+
+    const res = await request(app)
+      .patch(`/api/projects/${projectId}/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({
+        title: 'Safe Title',
+        _id: fakeId,
+        createdBy: fakeId,
+        projectId: fakeId,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data._id).toBe(taskId);
+    expect(res.body.data.title).toBe('Safe Title');
+
+    const getRes = await request(app)
+      .get(`/api/projects/${projectId}/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${aliceToken}`);
+    expect(getRes.body.data._id).toBe(taskId);
+    expect(getRes.body.data.createdBy._id).toBe(originalCreatedBy);
+    expect(getRes.body.data.projectId).toBe(projectId);
+  });
+
+  it('validation errors do not persist invalid changes', async () => {
+    const createRes = await request(app)
+      .post(`/api/projects/${projectId}/tasks`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ title: 'Valid Task', priority: 'medium' });
+    const taskId = createRes.body.data._id as string;
+
+    // Send invalid priority and title simultaneously
+    const res = await request(app)
+      .patch(`/api/projects/${projectId}/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ priority: 'ultra-high' });
+
     expect(res.status).toBe(400);
+
+    const getRes = await request(app)
+      .get(`/api/projects/${projectId}/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${aliceToken}`);
+    expect(getRes.body.data.priority).toBe('medium');
+    expect(getRes.body.data.title).toBe('Valid Task');
+  });
+
+  it('missing task produces 404 response on update', async () => {
+    const fakeId = new mongoose.Types.ObjectId().toString();
+    const res = await request(app)
+      .patch(`/api/projects/${projectId}/tasks/${fakeId}`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ title: 'New Title' });
+
+    expect(res.status).toBe(404);
+    expect(res.body.success).toBe(false);
+  });
+
+  it('existing project authorization rules continue to apply', async () => {
+    const bob = await registerAndLogin({
+      name: 'Bob Outsider',
+      email: 'bob.out@test.com',
+      password: 'password123',
+    });
+
+    const createRes = await request(app)
+      .post(`/api/projects/${projectId}/tasks`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ title: 'Alice Task' });
+    const taskId = createRes.body.data._id as string;
+
+    // Bob is not a member of Alice's project
+    const res = await request(app)
+      .patch(`/api/projects/${projectId}/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${bob.token}`)
+      .send({ title: 'Bob Hijack' });
+
+    expect(res.status).toBe(403);
+    expect(res.body.success).toBe(false);
   });
 });
 
