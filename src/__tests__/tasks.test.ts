@@ -187,6 +187,210 @@ describe('PATCH /api/projects/:projectId/tasks/:taskId', () => {
       .send({ priority: 'critical' });
     expect(res.status).toBe(400);
   });
+
+  describe('Task-level authorization on PATCH', () => {
+    let memberToken: string;
+    let otherMemberToken: string;
+    let outsiderToken: string;
+    let otherProjectId: string;
+
+    beforeEach(async () => {
+      // Bob is added to Alice's project
+      const bob = await registerAndLogin({
+        name: 'Bob Member',
+        email: 'bob.member@test.com',
+        password: 'password123',
+      });
+      memberToken = bob.token;
+      await request(app)
+        .post(`/api/projects/${projectId}/members`)
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send({ userId: bob.user.id });
+
+      // Charlie is also added to Alice's project
+      const charlie = await registerAndLogin({
+        name: 'Charlie Member',
+        email: 'charlie.member@test.com',
+        password: 'password123',
+      });
+      otherMemberToken = charlie.token;
+      await request(app)
+        .post(`/api/projects/${projectId}/members`)
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send({ userId: charlie.user.id });
+
+      // David is an outsider with his own project
+      const david = await registerAndLogin({
+        name: 'David Outsider',
+        email: 'david.outsider@test.com',
+        password: 'password123',
+      });
+      outsiderToken = david.token;
+
+      const otherProjRes = await request(app)
+        .post('/api/projects')
+        .set('Authorization', `Bearer ${outsiderToken}`)
+        .send({ name: 'David Project' });
+      otherProjectId = otherProjRes.body.data._id as string;
+    });
+
+    it('allows task creator (project member) to update their task', async () => {
+      const createRes = await request(app)
+        .post(`/api/projects/${projectId}/tasks`)
+        .set('Authorization', `Bearer ${memberToken}`)
+        .send({ title: "Bob's Task" });
+      const taskId = createRes.body.data._id as string;
+
+      const res = await request(app)
+        .patch(`/api/projects/${projectId}/tasks/${taskId}`)
+        .set('Authorization', `Bearer ${memberToken}`)
+        .send({ title: "Bob's Updated Task" });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.title).toBe("Bob's Updated Task");
+    });
+
+    it('allows project owner to update any task in their project', async () => {
+      const createRes = await request(app)
+        .post(`/api/projects/${projectId}/tasks`)
+        .set('Authorization', `Bearer ${memberToken}`)
+        .send({ title: "Bob's Task" });
+      const taskId = createRes.body.data._id as string;
+
+      // Alice is project owner
+      const res = await request(app)
+        .patch(`/api/projects/${projectId}/tasks/${taskId}`)
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send({ title: 'Owner Updated Bob Task' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.title).toBe('Owner Updated Bob Task');
+    });
+
+    it('allows assignee to update task', async () => {
+      const bobUser = await request(app)
+        .get('/api/auth/me')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      // Alice creates task assigned to Bob
+      const createRes = await request(app)
+        .post(`/api/projects/${projectId}/tasks`)
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send({ title: 'Task For Bob', assigneeId: bobUser.body.data.id });
+      const taskId = createRes.body.data._id as string;
+
+      // Bob (assignee) updates task
+      const res = await request(app)
+        .patch(`/api/projects/${projectId}/tasks/${taskId}`)
+        .set('Authorization', `Bearer ${memberToken}`)
+        .send({ title: 'Task Updated By Assignee' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.title).toBe('Task Updated By Assignee');
+    });
+
+    it('rejects update by an unauthorized project member with 403', async () => {
+      // Bob creates a task
+      const createRes = await request(app)
+        .post(`/api/projects/${projectId}/tasks`)
+        .set('Authorization', `Bearer ${memberToken}`)
+        .send({ title: "Bob's Private Task" });
+      const taskId = createRes.body.data._id as string;
+
+      // Charlie is a member of the same project, but not creator, owner, or assignee
+      const res = await request(app)
+        .patch(`/api/projects/${projectId}/tasks/${taskId}`)
+        .set('Authorization', `Bearer ${otherMemberToken}`)
+        .send({ title: 'Hacked by Charlie' });
+
+      expect(res.status).toBe(403);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error).toContain('Access denied');
+    });
+
+    it('rejects update by a user from another project with 403', async () => {
+      const createRes = await request(app)
+        .post(`/api/projects/${projectId}/tasks`)
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send({ title: "Alice's Task" });
+      const taskId = createRes.body.data._id as string;
+
+      // David tries to access Alice's project task
+      const res = await request(app)
+        .patch(`/api/projects/${projectId}/tasks/${taskId}`)
+        .set('Authorization', `Bearer ${outsiderToken}`)
+        .send({ title: 'David update' });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('returns 404 when taskId does not exist in the project for authorized user', async () => {
+      const fakeTaskId = new mongoose.Types.ObjectId().toString();
+      const res = await request(app)
+        .patch(`/api/projects/${projectId}/tasks/${fakeTaskId}`)
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send({ title: 'Non-existent' });
+
+      expect(res.status).toBe(404);
+    });
+
+    it('returns 404 when accessing a task with wrong projectId', async () => {
+      const createRes = await request(app)
+        .post(`/api/projects/${projectId}/tasks`)
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send({ title: "Alice's Task" });
+      const taskId = createRes.body.data._id as string;
+
+      // Alice tries to access her task using David's project ID (where she is not a member -> 403)
+      const res = await request(app)
+        .patch(`/api/projects/${otherProjectId}/tasks/${taskId}`)
+        .set('Authorization', `Bearer ${outsiderToken}`)
+        .send({ title: 'Mismatch' });
+
+      expect(res.status).toBe(404);
+    });
+
+    it('rejects assigning task to a non-project member with 400', async () => {
+      const davidUser = await request(app)
+        .get('/api/auth/me')
+        .set('Authorization', `Bearer ${outsiderToken}`);
+
+      const createRes = await request(app)
+        .post(`/api/projects/${projectId}/tasks`)
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send({ title: 'Task to assign' });
+      const taskId = createRes.body.data._id as string;
+
+      const res = await request(app)
+        .patch(`/api/projects/${projectId}/tasks/${taskId}`)
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send({ assigneeId: davidUser.body.data.id });
+
+      expect(res.status).toBe(400);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error).toContain('member');
+    });
+
+    it('allows unassigning a task (assigneeId: null)', async () => {
+      const bobUser = await request(app)
+        .get('/api/auth/me')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      const createRes = await request(app)
+        .post(`/api/projects/${projectId}/tasks`)
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send({ title: 'Assigned Task', assigneeId: bobUser.body.data.id });
+      const taskId = createRes.body.data._id as string;
+
+      const res = await request(app)
+        .patch(`/api/projects/${projectId}/tasks/${taskId}`)
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send({ assigneeId: null });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.assigneeId).toBeUndefined();
+    });
+  });
 });
 
 describe('DELETE /api/projects/:projectId/tasks/:taskId', () => {
@@ -217,6 +421,137 @@ describe('DELETE /api/projects/:projectId/tasks/:taskId', () => {
 
     const res = await request(app).delete(`/api/projects/${projectId}/tasks/${taskId}`);
     expect(res.status).toBe(401);
+  });
+
+  describe('Task-level authorization on DELETE', () => {
+    let memberToken: string;
+    let otherMemberToken: string;
+    let outsiderToken: string;
+
+    beforeEach(async () => {
+      // Bob is added to Alice's project
+      const bob = await registerAndLogin({
+        name: 'Bob Member',
+        email: 'bob.del@test.com',
+        password: 'password123',
+      });
+      memberToken = bob.token;
+      await request(app)
+        .post(`/api/projects/${projectId}/members`)
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send({ userId: bob.user.id });
+
+      // Charlie is also added to Alice's project
+      const charlie = await registerAndLogin({
+        name: 'Charlie Member',
+        email: 'charlie.del@test.com',
+        password: 'password123',
+      });
+      otherMemberToken = charlie.token;
+      await request(app)
+        .post(`/api/projects/${projectId}/members`)
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send({ userId: charlie.user.id });
+
+      // David is an outsider
+      const david = await registerAndLogin({
+        name: 'David Outsider',
+        email: 'david.del@test.com',
+        password: 'password123',
+      });
+      outsiderToken = david.token;
+    });
+
+    it('allows task creator to delete their own task', async () => {
+      const createRes = await request(app)
+        .post(`/api/projects/${projectId}/tasks`)
+        .set('Authorization', `Bearer ${memberToken}`)
+        .send({ title: "Bob's Task to Delete" });
+      const taskId = createRes.body.data._id as string;
+
+      const res = await request(app)
+        .delete(`/api/projects/${projectId}/tasks/${taskId}`)
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+    });
+
+    it('allows project owner to delete any task in the project', async () => {
+      const createRes = await request(app)
+        .post(`/api/projects/${projectId}/tasks`)
+        .set('Authorization', `Bearer ${memberToken}`)
+        .send({ title: "Bob's Task" });
+      const taskId = createRes.body.data._id as string;
+
+      // Alice (project owner) deletes Bob's task
+      const res = await request(app)
+        .delete(`/api/projects/${projectId}/tasks/${taskId}`)
+        .set('Authorization', `Bearer ${aliceToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+    });
+
+    it('rejects delete by an unauthorized project member with 403', async () => {
+      const createRes = await request(app)
+        .post(`/api/projects/${projectId}/tasks`)
+        .set('Authorization', `Bearer ${memberToken}`)
+        .send({ title: "Bob's Protected Task" });
+      const taskId = createRes.body.data._id as string;
+
+      // Charlie (member, not creator or owner) tries to delete
+      const res = await request(app)
+        .delete(`/api/projects/${projectId}/tasks/${taskId}`)
+        .set('Authorization', `Bearer ${otherMemberToken}`);
+
+      expect(res.status).toBe(403);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error).toContain('Access denied');
+    });
+
+    it('rejects delete by an assignee who is neither creator nor owner with 403', async () => {
+      const bobUser = await request(app)
+        .get('/api/auth/me')
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      // Alice creates a task assigned to Bob
+      const createRes = await request(app)
+        .post(`/api/projects/${projectId}/tasks`)
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send({ title: 'Task assigned to Bob', assigneeId: bobUser.body.data.id });
+      const taskId = createRes.body.data._id as string;
+
+      // Bob (assignee, not creator or owner) tries to delete
+      const res = await request(app)
+        .delete(`/api/projects/${projectId}/tasks/${taskId}`)
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(403);
+    });
+
+    it('rejects delete by a user from another project with 403', async () => {
+      const createRes = await request(app)
+        .post(`/api/projects/${projectId}/tasks`)
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send({ title: "Alice's Task" });
+      const taskId = createRes.body.data._id as string;
+
+      const res = await request(app)
+        .delete(`/api/projects/${projectId}/tasks/${taskId}`)
+        .set('Authorization', `Bearer ${outsiderToken}`);
+
+      expect(res.status).toBe(403);
+    });
+
+    it('returns 404 when deleting a non-existent task for authorized user', async () => {
+      const fakeTaskId = new mongoose.Types.ObjectId().toString();
+      const res = await request(app)
+        .delete(`/api/projects/${projectId}/tasks/${fakeTaskId}`)
+        .set('Authorization', `Bearer ${aliceToken}`);
+
+      expect(res.status).toBe(404);
+    });
   });
 });
 
