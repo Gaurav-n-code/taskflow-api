@@ -22,10 +22,13 @@ export const updateTaskSchema = z.object({
   }),
 });
 
-// DEFECT C: This schema accepts any string for status — no enum enforcement
 export const updateTaskStatusSchema = z.object({
   body: z.object({
-    status: z.string().min(1, 'Status is required'),
+    status: z.enum(taskStatusValues, {
+      errorMap: () => ({
+        message: "Status must be one of 'todo', 'in_progress', or 'completed'",
+      }),
+    }),
   }),
 });
 
