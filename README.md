@@ -48,70 +48,70 @@ The API will be available at `http://localhost:3000`.
 
 ## Environment Variables
 
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `PORT` | No | `3000` | Server port |
-| `NODE_ENV` | No | `development` | Runtime environment |
-| `MONGODB_URI` | No | `mongodb://localhost:27017/taskflow` | MongoDB connection string |
-| `JWT_SECRET` | **Yes** | — | Secret key for signing JWT tokens |
-| `JWT_EXPIRES_IN` | No | `7d` | JWT expiry duration |
-| `BCRYPT_ROUNDS` | No | `12` | bcrypt cost factor |
+| Variable         | Required | Default                              | Description                       |
+| ---------------- | -------- | ------------------------------------ | --------------------------------- |
+| `PORT`           | No       | `3000`                               | Server port                       |
+| `NODE_ENV`       | No       | `development`                        | Runtime environment               |
+| `MONGODB_URI`    | No       | `mongodb://localhost:27017/taskflow` | MongoDB connection string         |
+| `JWT_SECRET`     | **Yes**  | —                                    | Secret key for signing JWT tokens |
+| `JWT_EXPIRES_IN` | No       | `7d`                                 | JWT expiry duration               |
+| `BCRYPT_ROUNDS`  | No       | `12`                                 | bcrypt cost factor                |
 
 ## npm Scripts
 
-| Script | Description |
-|---|---|
-| `npm run dev` | Start development server with live reload |
-| `npm run build` | Compile TypeScript to `dist/` |
-| `npm start` | Run the compiled build |
-| `npm test` | Run Jest test suite |
-| `npm run lint` | Run ESLint |
-| `npm run format` | Format code with Prettier |
+| Script           | Description                               |
+| ---------------- | ----------------------------------------- |
+| `npm run dev`    | Start development server with live reload |
+| `npm run build`  | Compile TypeScript to `dist/`             |
+| `npm start`      | Run the compiled build                    |
+| `npm test`       | Run Jest test suite                       |
+| `npm run lint`   | Run ESLint                                |
+| `npm run format` | Format code with Prettier                 |
 
 ## API Endpoints
 
 ### Health
 
-| Method | Path | Auth | Description |
-|---|---|---|---|
-| GET | `/health` | No | Service health check |
+| Method | Path      | Auth | Description          |
+| ------ | --------- | ---- | -------------------- |
+| GET    | `/health` | No   | Service health check |
 
 ### Authentication
 
-| Method | Path | Auth | Description |
-|---|---|---|---|
-| POST | `/api/auth/register` | No | Register a new user |
-| POST | `/api/auth/login` | No | Login and receive JWT |
-| GET | `/api/auth/me` | Yes | Get current user profile |
+| Method | Path                 | Auth | Description              |
+| ------ | -------------------- | ---- | ------------------------ |
+| POST   | `/api/auth/register` | No   | Register a new user      |
+| POST   | `/api/auth/login`    | No   | Login and receive JWT    |
+| GET    | `/api/auth/me`       | Yes  | Get current user profile |
 
 ### Projects
 
-| Method | Path | Auth | Description |
-|---|---|---|---|
-| POST | `/api/projects` | Yes | Create a new project |
-| GET | `/api/projects` | Yes | List projects you belong to |
-| GET | `/api/projects/:projectId` | Yes | Get a project by ID |
-| POST | `/api/projects/:projectId/members` | Yes (owner) | Add a member to a project |
+| Method | Path                               | Auth        | Description                 |
+| ------ | ---------------------------------- | ----------- | --------------------------- |
+| POST   | `/api/projects`                    | Yes         | Create a new project        |
+| GET    | `/api/projects`                    | Yes         | List projects you belong to |
+| GET    | `/api/projects/:projectId`         | Yes         | Get a project by ID         |
+| POST   | `/api/projects/:projectId/members` | Yes (owner) | Add a member to a project   |
 
 ### Tasks
 
-| Method | Path | Auth | Description |
-|---|---|---|---|
-| POST | `/api/projects/:projectId/tasks` | Yes | Create a task |
-| GET | `/api/projects/:projectId/tasks` | Yes | List tasks (paginated) |
-| GET | `/api/projects/:projectId/tasks/:taskId` | Yes | Get a task by ID |
-| PATCH | `/api/projects/:projectId/tasks/:taskId` | Yes | Update task fields |
-| PATCH | `/api/projects/:projectId/tasks/:taskId/status` | Yes | Update task status |
-| DELETE | `/api/projects/:projectId/tasks/:taskId` | Yes | Delete a task |
+| Method | Path                                            | Auth | Description            |
+| ------ | ----------------------------------------------- | ---- | ---------------------- |
+| POST   | `/api/projects/:projectId/tasks`                | Yes  | Create a task          |
+| GET    | `/api/projects/:projectId/tasks`                | Yes  | List tasks (paginated) |
+| GET    | `/api/projects/:projectId/tasks/:taskId`        | Yes  | Get a task by ID       |
+| PATCH  | `/api/projects/:projectId/tasks/:taskId`        | Yes  | Update task fields     |
+| PATCH  | `/api/projects/:projectId/tasks/:taskId/status` | Yes  | Update task status     |
+| DELETE | `/api/projects/:projectId/tasks/:taskId`        | Yes  | Delete a task          |
 
 #### Task listing query parameters
 
-| Parameter | Type | Description |
-|---|---|---|
-| `page` | integer | Page number (default: 1) |
-| `limit` | integer | Items per page (default: 20, max: 100) |
-| `status` | string | Filter by status: `todo`, `in_progress`, `completed` |
-| `priority` | string | Filter by priority: `low`, `medium`, `high` |
+| Parameter  | Type    | Description                                          |
+| ---------- | ------- | ---------------------------------------------------- |
+| `page`     | integer | Page number (default: 1)                             |
+| `limit`    | integer | Items per page (default: 20, max: 100)               |
+| `status`   | string  | Filter by status: `todo`, `in_progress`, `completed` |
+| `priority` | string  | Filter by priority: `low`, `medium`, `high`          |
 
 ## Example Requests
 
@@ -160,7 +160,9 @@ curl "http://localhost:3000/api/projects/<projectId>/tasks?page=1&limit=10&prior
 
 - **Project access**: Users can only access projects where they are the owner or a member.
 - **Adding members**: Only the project owner can add new members.
-- **Task access**: Any project member can create, read, update, and delete tasks within their projects.
+- **Task creation & viewing**: Any project member can view and create tasks within their projects. Assignees must be members of the project.
+- **Task updates**: Only the project owner, the task creator, or the assigned member can update a task or its status. Ownership (creator/project) cannot be altered.
+- **Task deletion**: Only the project owner or the task creator can delete a task.
 
 ## Error Responses
 
@@ -170,7 +172,7 @@ All errors follow a consistent JSON shape:
 {
   "success": false,
   "error": "Human-readable error message",
-  "details": [ { "field": "body.email", "message": "Invalid email" } ]
+  "details": [{ "field": "body.email", "message": "Invalid email" }]
 }
 ```
 
